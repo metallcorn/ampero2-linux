@@ -1,0 +1,5 @@
+build/wine-src/
+build/out/
+__pycache__/
+*.pyc
+*.orig-backup

@@ -1,0 +1,135 @@
+diff --git a/dlls/winealsa.drv/alsamidi.c b/dlls/winealsa.drv/alsamidi.c
+index efd35e66..9d2cbd5b 100644
+--- a/dlls/winealsa.drv/alsamidi.c
++++ b/dlls/winealsa.drv/alsamidi.c
+@@ -74,6 +74,8 @@ struct midi_src
+     snd_seq_t          *seq;
+     snd_seq_addr_t      addr;
+     int                 port_in;
++    BOOL                expect_sysex_start;
++    UINT                sysex_total_bytes;
+ };
+ 
+ static pthread_mutex_t seq_mutex = PTHREAD_MUTEX_INITIALIZER;
+@@ -954,12 +956,28 @@ static UINT midi_out_reset(WORD dev_id)
+     return MMSYSERR_NOERROR;
+ }
+ 
++static void trace_sysex_chunk(struct midi_src *src, const BYTE *data, UINT len, UINT hdr_bytes_recorded, BOOL expect_start)
++{
++    FILE *f = fopen("/tmp/wine_midi_trace_proton.log", "a");
++    UINT i;
++    struct timespec ts;
++    if (!f) return;
++    clock_gettime(CLOCK_REALTIME, &ts);
++    fprintf(f, "[%lld.%06ld][dev %d] chunk len=%u hdr_bytes_recorded=%u expect_start=%d:",
++            (long long)ts.tv_sec, ts.tv_nsec / 1000, (int)(src - srcs), len, hdr_bytes_recorded, expect_start);
++    for (i = 0; i < len; i++) fprintf(f, " %02x", data[i]);
++    fprintf(f, "\n");
++    fclose(f);
++}
++
+ static void handle_sysex_event(struct midi_src *src, BYTE *data, UINT len)
+ {
+     UINT pos = 0, copy_len, current_time = get_time_msec() - src->startTime;
+     struct notify_context notify;
+     MIDIHDR *hdr;
+ 
++    trace_sysex_chunk(src, data, len, src->lpQueueHdr ? src->lpQueueHdr->dwBytesRecorded : 0xffffffff, src->expect_sysex_start);
++
+     in_buffer_lock();
+ 
+     while (len)
+@@ -967,20 +985,61 @@ static void handle_sysex_event(struct midi_src *src, BYTE *data, UINT len)
+         hdr = src->lpQueueHdr;
+         if (!hdr) break;
+ 
++        if (!hdr->dwBytesRecorded && src->expect_sysex_start)
++        {
++            src->sysex_total_bytes = 0;
++            /* A fresh message must start with a SysEx start byte. The ALSA raw-MIDI to
++             * sequencer bridge does not resynchronize to message boundaries, so if we
++             * subscribe to a port mid-transmission we can otherwise hand the app a
++             * truncated fragment of a message it never saw the start of. Drop any such
++             * leading garbage instead of feeding it to the app as if it were a real message.
++             * This only applies when we're truly expecting a new message (i.e. not when a
++             * previous buffer was rolled over mid-message because it filled up before the
++             * app-supplied buffer reached the 0xF7 terminator). */
++            while (len && data[pos] != 0xF0)
++            {
++                pos++;
++                len--;
++            }
++            if (!len)
++            {
++                WARN("Dropping SysEx fragment with no start byte for dev %d.\n", (int)(src - srcs));
++                break;
++            }
++        }
++
+         copy_len = min(len, hdr->dwBufferLength - hdr->dwBytesRecorded);
+         memcpy(hdr->lpData + hdr->dwBytesRecorded, data + pos, copy_len);
+         hdr->dwBytesRecorded += copy_len;
++        src->sysex_total_bytes += copy_len;
+         len -= copy_len;
+         pos += copy_len;
+ 
+         if ((hdr->dwBytesRecorded == hdr->dwBufferLength) ||
+             (*(BYTE*)(hdr->lpData + hdr->dwBytesRecorded - 1) == 0xF7))
+         { /* buffer full or end of sysex message */
++            BOOL message_complete = (*(BYTE*)(hdr->lpData + hdr->dwBytesRecorded - 1) == 0xF7);
++            src->expect_sysex_start = message_complete;
+             src->lpQueueHdr = hdr->lpNext;
+             hdr->dwFlags &= ~MHDR_INQUEUE;
+             hdr->dwFlags |= MHDR_DONE;
+             set_in_notify(&notify, src, src - srcs, MIM_LONGDATA, (DWORD_PTR)hdr, current_time);
+             notify_post(&notify);
++            /* RESTORED 2026-07-27 after regression-testing several "improved" variants
++             * (conditional-only-on-real-end, 100ms, adaptive-by-size, no-delay) against
++             * this original unconditional version and finding every one of them regressed
++             * connection reliability badly (consistently died around address 0x100000-
++             * 0x1080000 in the startup handshake) compared to this exact 30ms-on-every-
++             * buffer-completion version, which reliably completes the full handshake and
++             * reaches the working editor UI. The exact mechanism isn't fully understood -
++             * theory was that skipping the delay on buffer-full mid-message splits was a
++             * safe optimization (the app can't process an incomplete message anyway), but
++             * empirically this pacing between *every* raw chunk hand-off (not just on the
++             * final 0xF7) is required for reliability, particularly for the larger
++             * multi-chunk "address read" responses. Do not "optimize" this again without
++             * re-running the same regression test (binary_versions/winealsa_so/ has the
++             * saved builds from that test). */
++            usleep(30000);
+         }
+     }
+ 
+@@ -1243,6 +1302,22 @@ static UINT midi_in_close(WORD dev_id, struct notify_context *notify)
+     seq_unlock();
+     seq_close();
+ 
++    /* The app is about to free whatever object its MIDI-in callback points at once this
++     * function returns, on the assumption (matching documented Windows midiInClose behaviour)
++     * that no further callbacks will fire for this device afterwards. But any notification for
++     * this device already sitting in the ring buffer, queued before we stopped the recording
++     * thread above, would otherwise still be delivered later by the separate notify_thread
++     * (in mmdevapi), calling back into an app object that no longer exists. Neutralize any such
++     * pending stale notifications for this device now, while we still hold enough state to know
++     * which ones are ours. */
++    pthread_mutex_lock(&notify_mutex);
++    {
++        struct notify_context *p;
++        for (p = notify_read; p != notify_write; p = notify_buffer_next(p))
++            if (p->dev_id == dev_id) p->send_notify = FALSE;
++    }
++    pthread_mutex_unlock(&notify_mutex);
++
+     set_in_notify(notify, src, dev_id, MIM_CLOSE, 0, 0);
+     src->midiDesc.hMidi = 0;
+     src->seq = NULL;
+@@ -1338,6 +1413,7 @@ static UINT midi_in_start(WORD dev_id)
+ 
+     src->state = 1;
+     src->startTime = get_time_msec();
++    src->expect_sysex_start = TRUE;
+     return MMSYSERR_NOERROR;
+ }
+ 

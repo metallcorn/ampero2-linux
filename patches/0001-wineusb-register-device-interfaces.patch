@@ -1,0 +1,70 @@
+diff --git a/dlls/wineusb.sys/wineusb.c b/dlls/wineusb.sys/wineusb.c
+index 806c197e..59865de8 100644
+--- a/dlls/wineusb.sys/wineusb.c
++++ b/dlls/wineusb.sys/wineusb.c
+@@ -67,12 +67,18 @@ DECLARE_CRITICAL_SECTION(wineusb_cs);
+ 
+ static struct list device_list = LIST_INIT(device_list);
+ 
++/* DDK's usbiodef.h does not currently define this; value matches the real
++ * Windows GUID_DEVINTERFACE_USB_DEVICE. */
++static const GUID GUID_DEVINTERFACE_USB_DEVICE =
++    {0xa5dcbf10, 0x6530, 0x11d2, {0x90, 0x1f, 0x00, 0xc0, 0x4f, 0xb9, 0x51, 0xed}};
++
+ struct usb_device
+ {
+     struct list entry;
+     BOOL removed;
+ 
+     DEVICE_OBJECT *device_obj;
++    UNICODE_STRING link_name;
+ 
+     bool interface;
+     int16_t interface_index;
+@@ -125,6 +131,7 @@ static void add_unix_device(const struct usb_add_device_event *event)
+     device->unix_device = event->device;
+     InitializeListHead(&device->irp_list);
+     device->removed = FALSE;
++    memset(&device->link_name, 0, sizeof(device->link_name));
+ 
+     device->interface = event->interface;
+     device->interface_index = event->interface_index;
+@@ -480,6 +487,25 @@ static NTSTATUS pdo_pnp(DEVICE_OBJECT *device_obj, IRP *irp)
+         }
+ 
+         case IRP_MN_START_DEVICE:
++            if (!device->link_name.Buffer)
++            {
++                NTSTATUS iface_status;
++
++                iface_status = IoRegisterDeviceInterface(device_obj,
++                        &GUID_DEVINTERFACE_USB_DEVICE, NULL, &device->link_name);
++                if (iface_status)
++                {
++                    WARN("Failed to register device interface for %p, status %#lx.\n",
++                            device_obj, iface_status);
++                    memset(&device->link_name, 0, sizeof(device->link_name));
++                }
++                else if ((iface_status = IoSetDeviceInterfaceState(&device->link_name, TRUE)))
++                {
++                    WARN("Failed to enable device interface for %p, status %#lx.\n",
++                            device_obj, iface_status);
++                }
++            }
++
+             ret = STATUS_SUCCESS;
+             break;
+ 
+@@ -499,6 +525,12 @@ static NTSTATUS pdo_pnp(DEVICE_OBJECT *device_obj, IRP *irp)
+             assert(device->removed);
+             remove_pending_irps(device);
+ 
++            if (device->link_name.Buffer)
++            {
++                IoSetDeviceInterfaceState(&device->link_name, FALSE);
++                RtlFreeUnicodeString(&device->link_name);
++            }
++
+             destroy_unix_device(device->unix_device);
+ 
+             IoDeleteDevice(device->device_obj);

@@ -1,0 +1,43 @@
+diff --git a/programs/winedbg/tgt_active.c b/programs/winedbg/tgt_active.c
+index 02bc3bc4..6553f89c 100644
+--- a/programs/winedbg/tgt_active.c
++++ b/programs/winedbg/tgt_active.c
+@@ -916,9 +916,21 @@ enum dbg_start dbg_active_auto(int argc, char* argv[])
+         break;
+     }
+ 
++    if (output == INVALID_HANDLE_VALUE)
++    {
++        dbg_houtput = output = CreateFileW( L"C:\\crash_report.txt", GENERIC_WRITE, FILE_SHARE_READ,
++                                             NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, 0 );
++    }
++
+     input = parser_generate_command_file("echo Modules:", "info share",
+                                          "echo Threads:", "info threads",
+                                          "info system",
++                                         "echo Backtrace:", "bt",
++                                         "echo Locals:", "info locals",
++                                         "echo Registers:", "info regs",
++                                         "echo MemRDX:", "x/64b $rdx",
++                                         "echo MemR14:", "x/64b $r14",
++                                         "echo MemR15:", "x/64b $r15",
+                                          "detach",
+                                          NULL);
+     if (input == INVALID_HANDLE_VALUE) return start_error_parse;
+@@ -944,7 +956,7 @@ enum dbg_start dbg_active_auto(int argc, char* argv[])
+         else
+             dbg_active_wait_for_first_exception();
+     }
+-    if (output != INVALID_HANDLE_VALUE)
++    if (thread)
+     {
+         SetEvent( event );
+         WaitForSingleObject( thread, INFINITE );
+@@ -952,6 +964,7 @@ enum dbg_start dbg_active_auto(int argc, char* argv[])
+         CloseHandle( thread );
+         CloseHandle( event );
+     }
++    else if (output != INVALID_HANDLE_VALUE) CloseHandle( output );
+ 
+     CloseHandle( input );
+     return start_ok;
