@@ -9,6 +9,18 @@ proprietary `HTUSBTools.dll`, or the Ampero II Setup installer itself — you
 build/install those yourself from official sources, and these scripts glue
 the result together. See "Why not just share the whole thing" below.
 
+## Screenshots
+
+| | |
+| --- | --- |
+| ![Editor with a full effect chain, browsing the WAH pedal gallery](docs/screenshots/editor-effect-gallery.png) | ![Browsing Hotone's online Community presets from inside the app](docs/screenshots/hotone-community.png) |
+| Effect chain editor, effect gallery open | Hotone Community browser (online) |
+
+![App connected live to the pedal, showing real knob values (35/25/60) read back from hardware](docs/screenshots/live-pedal-connection.png)
+
+Live connection to the pedal — the "Custom Gate" knob values shown (35/25/60)
+are read back from the hardware, not just UI defaults.
+
 ## Status
 
 The app **works end-to-end** with these patches: renders correctly, browses
