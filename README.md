@@ -38,10 +38,33 @@ automatic detect-and-retry wrapper as the practical mitigation.
 - Steam, with **Proton - Experimental** installed (free, via Steam's Tools
   list or any game's Compatibility settings) — used as the patched-driver
   base, since it has a working DXVK/winex11 integration out of the box.
-- A normal Wine build toolchain to compile the two patched drivers (gcc,
-  flex, bison, the X11/ALSA/etc dev headers Wine needs, 32-bit multilib for
-  `--enable-archs=i386,x86_64`). See winehq.org for your distro's package
-  list if `build/build-wine.sh` fails on a missing dependency.
+- A normal Wine build toolchain to compile the two patched drivers: gcc,
+  flex, bison, **mingw-w64** (cross-compiler for the Windows-side `.sys`
+  driver), and the X11/ALSA/etc dev headers Wine's `./configure` checks for.
+  Roughly, on Ubuntu / Mint / Debian:
+
+  ```sh
+  sudo apt install git gcc make flex bison gcc-mingw-w64 \
+      libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev \
+      libxinerama-dev libxcomposite-dev libxfixes-dev libfreetype-dev \
+      libfontconfig-dev libasound2-dev libpulse-dev libusb-1.0-0-dev \
+      libudev-dev libdbus-1-dev libvulkan-dev libgnutls28-dev
+  ```
+
+  and on Fedora:
+
+  ```sh
+  sudo dnf install git gcc make flex bison mingw64-gcc mingw32-gcc \
+      libX11-devel libXext-devel libXrandr-devel libXi-devel libXcursor-devel \
+      libXinerama-devel libXcomposite-devel libXfixes-devel freetype-devel \
+      fontconfig-devel alsa-lib-devel pulseaudio-libs-devel libusb1-devel \
+      systemd-devel dbus-devel vulkan-loader-devel gnutls-devel
+  ```
+
+  If `build/build-wine.sh` still stops at `./configure` with a missing
+  library, install that library's `-dev`/`-devel` package and re-run it.
+- **No root needed.** Run every step below as your normal user, not with
+  `sudo` — everything goes into `~/.local/share/ampero2-linux`.
 - Your own legitimately-obtained copy of the "Ampero II Setup" installer
   (from Hotone) — this repo cannot provide it.
 - Python 3, for the `HTUSBTools.dll` patcher.
@@ -49,7 +72,7 @@ automatic detect-and-retry wrapper as the practical mitigation.
 ## Quick start
 
 ```sh
-git clone git@github.com:metallcorn/ampero2-linux.git
+git clone https://github.com/metallcorn/ampero2-linux.git
 cd ampero2-linux
 
 # 1. Build the two patched Wine drivers (clones wine-mirror at the matching
@@ -103,6 +126,25 @@ disable the wrapper), `AMPERO_CONNECT_TIMEOUT` (45s), `AMPERO_STALL_GRACE`
   `launch.sh` detects a missing i386 loader and drives the 64-bit loader
   directly with `WINELOADERNOEXEC=1`. Confirmed fixed on a second machine with
   no i386 packages installed at all.
+
+## Troubleshooting
+
+- **`Library libvkd3d-1.dll ... not found`, then `wined3d.dll` / `dxgi.dll` /
+  `flutter_windows.dll ... not found`, then `status c0000135`**
+  ([#1](https://github.com/metallcorn/ampero2-linux/issues/1)). The prefix is
+  missing Proton's DXVK/vkd3d DLLs. Fixed in `setup-prefix.sh`; if you set
+  things up before that fix, just update and re-run it — it reuses your
+  existing Proton copy and prefix (the installed app stays) and only adds the
+  missing DLLs and overrides:
+
+  ```sh
+  git pull && ./build/setup-prefix.sh
+  ```
+
+  No need for winetricks or distro `vkd3d`/`dxvk` packages.
+- **Takes several attempts to connect to the pedal.** Expected for now, see
+  "Known open issue" below. `launch.sh` retries for you; raise
+  `AMPERO_ATTEMPTS` if it gives up.
 
 ## Known open issue
 
